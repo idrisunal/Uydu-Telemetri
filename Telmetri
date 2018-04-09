@@ -1,0 +1,197 @@
+import Adafruit_BMP.BMP085 as BMP085
+import RPi.GPIO as GPIO
+from time import localtime, gmtime, strftime, sleep
+import serial
+import pynmea2
+from math import pi
+import os
+from io import BytesIO
+from picamera import PiCamera
+
+#Uydu verileri
+paket_sayac=0
+uydu_durum=0
+
+#GPS verileri
+serialPort=serial.Serial("/dev/ttyUSB0",9600,timeout=100)
+enlem=0
+boylam=0
+gps_yukseklik=0
+fark=0
+
+#10Dof verileri
+sensor=BMP085.BMP085()
+sicaklik=' '
+basinc= ' '
+yukseklik=' '
+yukseklik_int=0
+bas_yukseklik=format(sensor.read_altitude())
+
+#ADC Pinleri
+AO_pin = 0 
+SPICLK = 11
+SPIMISO = 9
+SPIMOSI = 10
+SPICS = 8
+voltage=' '
+gerilim= ' '
+
+#ADC icin fonksiyon
+def init():
+	  GPIO.setwarnings(False)
+          GPIO.setmode(GPIO.BCM)
+          GPIO.setup(SPIMOSI, GPIO.OUT)
+          GPIO.setup(SPIMISO, GPIO.IN)
+          GPIO.setup(SPICLK, GPIO.OUT)
+          GPIO.setup(SPICS, GPIO.OUT)
+          pass
+
+#ADC icin fonksiyon
+def readadc(adcnum, clockpin, mosipin, misopin, cspin):
+			if ((adcnum > 7) or (adcnum < 0)):
+		                return -1
+   			GPIO.output(cspin, True)  
+
+     		   	GPIO.output(clockpin, False)  
+	        	GPIO.output(cspin, False)     
+	
+	        	commandout = adcnum
+	        	commandout |= 0x18  
+	        	commandout <<= 3    
+	        	for i in range(5):
+	                	if (commandout & 0x80):
+	                        	GPIO.output(mosipin, True)
+	                	else:
+	                        	GPIO.output(mosipin, False)
+	                	commandout <<= 1
+	                	GPIO.output(clockpin, True)
+	                	GPIO.output(clockpin, False)
+	
+	        	adcout = 0
+	       
+	        	for i in range(12):
+	                	GPIO.output(clockpin, True)
+	                	GPIO.output(clockpin, False)
+	                	adcout <<= 1
+	                	if (GPIO.input(misopin)):
+	                        	adcout |= 0x1
+
+	        	GPIO.output(cspin, True)
+	        
+	      	        adcout >>= 1       
+	        	return adcout
+
+'''		
+def video():
+	stream = BytesIO()
+	camera = PiCamera()
+	camera.resolution = (640, 480)
+	camera.start_recording('my_video.h264')
+	camera.wait_recording(1000)
+	camera.stop_recording()
+'''
+#global gps	
+gps=0
+#Gps icin tanimli fonksiyon	
+def parseGPS(abs):
+		if abs.find('GGA')>0:
+			msg=pynmea2.parse(abs)
+			global enlem
+			global boylam
+			global gps_yukseklik
+			
+
+
+			if (msg.altitude is None):
+				gps_yukseklik=0
+			else:
+				gps_yukseklik=float(msg.altitude)
+				enlem=float(msg.lat)
+				boylam=float(msg.lon)
+				#gps=gps_yukseklik
+
+
+print 'simdi burada'
+ser_xbee=serial.Serial(
+	port='/dev/ttyS0',
+	baudrate=9600,
+	parity=serial.PARITY_NONE,
+	stopbits=serial.STOPBITS_ONE,
+	bytesize=serial.EIGHTBITS,
+    timeout=0.5)
+
+print'xbee gecildi'
+
+
+#ana fonksiyon				
+def main(ser_xbee):
+		 init()
+		 while True:
+			sleep(1)
+		 	ad_value=readadc(AO_pin, SPICLK, SPIMOSI, SPIMISO, SPICS)
+        	 	voltage = ad_value*(3.3/1024)*5
+			gerilim='%.2f'%voltage
+			#video()
+		 	abs=serialPort.readline()
+		 	parseGPS(abs)
+			sicaklik=format(sensor.read_temperature())
+			basinc=format(sensor.read_pressure())
+			yukseklik=format(sensor.read_altitude())
+			yukseklik_int=format(sensor.read_altitude())
+			delta_yuk=float(yukseklik_int)-float(bas_yukseklik)
+			fark=float(gps_yukseklik)-1047
+			print 'gps farki=',fark
+			global gps
+			gps=gps_yukseklik
+			
+
+			print 'GPS==',gps
+			print delta_yuk,'yukseklik farki'
+			print bas_yukseklik,'ilk yukseklik'
+			
+			if (sensor is None):
+				global uydu_durum
+				uydu_durum=0
+			else:
+				uydu_durum=1
+			
+			print ' '
+			print sicaklik,'C', basinc,'Pa', yukseklik,'m', yukseklik_int,'m'	
+		 	print enlem,'enlem',boylam,'boylam',gps_yukseklik,'m'	 	
+		 	print gerilim,'V'
+			print (strftime("Tarih:%Y-%m-%d Saat: %H:%M:%S",localtime()))
+			print ' '
+			
+			if(delta_yuk==500):
+				if (delta_yuk=<400):
+					
+
+			if ser_xbee.isOpen():
+				global paket_sayac
+				paket_sayac +=1
+				print'paket no:',str(paket_sayac), 'uydu durum:',str(uydu_durum) 
+				ser_xbee.writelines('2298' + ',' +str(paket_sayac)+ ',' 
+						    +strftime("%H:%M:%S",localtime())+ ',' 
+						    +basinc+ ',' +str(delta_yuk)+ ','+ 'hiz' + ',' +sicaklik+ ','
+					            +gerilim+ ',' +str(enlem)+ ',' +str(boylam)+ ',' 
+						    +str(gps_yukseklik)+ ',' +str(uydu_durum))
+				print ' '
+				print ' '
+				print ('2298' + ',' +str(paket_sayac)+ ',' +strftime("%H:%M:%S",localtime())+ ',' 
+					+basinc+ ',' +str(delta_yuk)+ ',' +'hiz'+ ',' +sicaklik+ ','
+					+gerilim+ ',' +str(enlem)+ ',' +str(boylam)+ ',' 
+					+str(gps_yukseklik)+ ',' +str(uydu_durum)) 
+			else:
+				print 'calismadi'		
+
+			with open('/home/pi/telemtry_log.txt', 'a') as file:
+				file.write('2298' + ',' +str(paket_sayac)+ ',' +strftime("%H:%M:%S",localtime())+ ',' 
+					+basinc+ ',' +str(delta_yuk)+ ',' +'hiz'+ ',' +sicaklik+ ','
+					+gerilim+ ',' +str(enlem)+ ',' +str(boylam)+ ',' 
+					+str(gps_yukseklik)+ ',' +str(uydu_durum)) 
+					
+                                file.close()
+
+
+print 'program sonunda'
+main(ser_xbee)		
